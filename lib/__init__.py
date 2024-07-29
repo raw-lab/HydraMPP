@@ -14,8 +14,10 @@ Data Structure formats:
 NODES: list
 NODES[i]: dict
   socket: socket.socket
+  address: address
   hostname: str (unique)
-
+  num_cpus: int
+  cpus: int
 
 QUEUE: dict
 key = id:int
@@ -48,6 +50,7 @@ import psutil
 import time
 from pathlib import Path
 import re
+import subprocess
 
 from .log import *
 from .net import *
@@ -56,12 +59,15 @@ from .client import *
 
 ## GLOBAL VARIABLES ##
 MANAGER = mp.Manager()
+NODES = MANAGER.list()
+QUEUE = MANAGER.dict()
+
+SLURM_CLIENTS = list()
 RUNNING = False
+SLURM = False
 P = None
 CURR_ID = 0
 WORKERS = dict()
-NODES = MANAGER.list()
-QUEUE = MANAGER.dict()
 
 
 ## CLASS ##
@@ -124,21 +130,22 @@ class Worker:
 		return id
 
 ## METHODS ##
-def init(address="local", num_cpus=None, log_to_driver=False, timeout=5, port=24515):
+def init(address="local", num_cpus=None, timeout=5, port=24515, log_to_driver=False):
 	def is_ip(a,p):
 		return True #TODO: Actually check for valid ip address format
 	global P
 	global NODES
 	global RUNNING
+	global SLURM
+	if SLURM:
+		printlog("Started with slurm options")
+		return True
 	if RUNNING:
-		printlog("WARNING: HydraMPP Already running")
-		return
+		printlog("WARNING: HydraMPP Already running, skipping re-init. Shutdown first, and try again")
+		return True
 	RUNNING = True
 
 	hostnames = set()
-	#printlog("INFO: Workers Available:")
-	#for k,v in WORKERS.items():
-	#	printlog("",v,k, sep='\t')
 	if not num_cpus:
 		num_cpus = psutil.cpu_count()
 	hostnames.add(socket.gethostname())
@@ -168,6 +175,7 @@ def init(address="local", num_cpus=None, log_to_driver=False, timeout=5, port=24
 		while time.time() < start+timeout:
 			try:
 				(sock, (addr, port)) = h_socket.accept()
+				sock.settimeout(0)
 				printlog("HOST Accepted connection from:", addr)
 				msg = sock.recv(1024).decode("utf-8")
 				match = re.search(r'cpus:(\d+),hostname:(.+)', msg)
@@ -215,19 +223,61 @@ def init(address="local", num_cpus=None, log_to_driver=False, timeout=5, port=24
 
 
 def main_loop():
+	address = ("", 24515)
+	sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+	sock_status.bind(address)	
+	sock_status.setblocking(False)
+	max_sent = 0
+
+	print("UDP server up and listening")
 	start = time.time()
 	while RUNNING:
 		time.sleep(0.1)
 		for i in range(1, len(NODES)):
-			msg = recv_msg(NODES[i]['socket'])
+			try: msg = recv_msg(NODES[i]['socket'])
+			except: msg = None
 			if msg:
 				(id,(func_name,ret,duration)), = pickle.loads(msg).items()
 				NODES[i]['cpus'] += QUEUE[id][3]
 				QUEUE[id][0], QUEUE[id][2], QUEUE[id][4] = [True, ret, duration]
 				#QUEUE[id] = [True, func_name, ret, QUEUE[id][3], duration, NODES[i]['hostname']]
+
+		# Listen for status request
+		try:
+			msg,addr = sock_status.recvfrom(1024)
+			if msg:
+				now = time.localtime()
+				nodes = list()
+				for node in NODES:
+					nodes += [dict(
+						address = node['address'],
+						hostname = node['hostname'],
+						num_cpus = node['num_cpus'],
+						cpus = node['cpus'],
+						)]
+				queue = dict()
+				for k,v in QUEUE.items():
+					queue[k] = dict(
+						finished = v[0],
+						func_name = v[1],
+						#ret = v[2],
+						num_cpus = v[3],
+						runtime = v[4],
+						hostname = v[5]
+					)
+				data = pickle.dumps((now, nodes, queue))
+				if len(data) > max_sent:
+					max_sent = len(data)
+				sock_status.sendto(data, addr)
+				#sendto_msg(sock_status, data, addr)
+		except socket.error: pass
+		except Exception as e:
+			printlog("RECV ERROR:")
+			printlog(e)
+
+		continue
 		if time.time() > start+1:
 			start = time.time()
-			continue
 			with open(NODES[0]["temp"]/"status.log", 'w') as writer:
 				now = time.localtime()
 				print(f"{now[3]}:{now[4]}:{now[5]}", file=writer)
@@ -243,6 +293,7 @@ def main_loop():
 						printlog(e)
 						pass
 				writer.flush()
+	sock_status.close()
 	return
 
 def nodes():
@@ -304,4 +355,67 @@ def shutdown():
 	time.sleep(1)
 	return
 
+
+### Execute commands on loading HydraMPP ###
+
 atexit.register(shutdown)
+
+if re.search(r'--hydra-', ''.join(sys.argv)):
+	import argparse
+	parser = argparse.ArgumentParser()
+	s_parser = parser.add_mutually_exclusive_group()
+	s_parser.add_argument('--hydra-slurm', type=str, help=argparse.SUPPRESS)
+	s_parser.add_argument('--hydra-client', type=str, help=argparse.SUPPRESS)
+	args,argv = parser.parse_known_args()
+
+	# clear hydra flags from sys.argv
+	sys.argv = [sys.argv[0]] + argv
+
+	if "hydra_slurm" in args:
+		cmd = ["scontrol", "show", "hostnames", args.hydra_slurm]
+		nodes = subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.split()
+		printlog("Starting HydraMPP on slurm nodes:", nodes)
+		
+		cmd = ["srun", "--nodes=1", "--ntasks=1", "-w", nodes[0], "hostname", "--ip-address"]
+		head_ip = subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout
+		printlog("HEAD IP:", head_ip)
+
+		p = mp.Process(target=init, args=["host"])
+		p.start()
+		time.sleep(1)
+
+		for i in range(1, len(nodes)):
+			cmd = sys.argv + ["--hydra-client", head_ip]
+			printlog("CMD:", cmd)
+			SLURM_CLIENTS += [subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)]
+		p.join()
+	elif "hydra_client" in args:
+		init(args.hydra_client)
+
+	SLURM = True
+	sys.exit(0)
+#   nodes=$(scontrol show hostnames "$SLURM_JOB_NODELIST")
+#   nodes_array=($nodes)
+#   
+#   head_node=${nodes_array[0]}
+#   head_node_ip=$(srun --nodes=1 --ntasks=1 -w "$head_node" hostname --ip-address)
+#   
+#   #  export head_node_ip
+#   >&2 echo "IP Head: $head_node_ip"
+#   
+#   >&2 echo "Starting HOST at $head_node"
+#   srun --nodes=1 --ntasks=1 -w "$head_node" \
+#     command time metacerberus.py --address host $args &
+#   
+#   sleep 1
+#   
+#   
+#   # number of nodes other than the head node
+#   worker_num=$((SLURM_JOB_NUM_NODES - 1))
+#   
+#   for ((i = 1; i <= worker_num; i++)); do
+#     node_i=${nodes_array[$i]}
+#     >&2 echo "Starting WORKER $i at $node_i"
+#     srun --nodes=1 --ntasks=1 -w "$node_i" \
+#       command time metacerberus.py --address $head_node_ip $args &>$node_i.log &
+#   done
