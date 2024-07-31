@@ -82,10 +82,12 @@ watch -n1 hydra-status localhost
 
 HydraMPP has a built in function to utilize a SLURM environment.  
   
-All you need to do is add the flag ```--hydraMPP_slurm $SLURM_JOB_NODELIST``` when executing your python program and Hydra will take care of configuring the host/clients.  
+All you need to do is add the flag ```--hydraMPP-slurm $SLURM_JOB_NODELIST``` when executing your python program and Hydra will take care of configuring the host/clients.  
   
 make sure to call ```HydraMPP.init()``` once all required methods have been tagged with ```@HydraMPP.remote```  
   
+The ```hydraMPP-cpus``` can be used to set the number of CPUs for each node to use. If set to '0' or omitted then HydraMPP will try to guess the number of CPUs available on each node.
+
 i.e.
 
 ```bash
@@ -106,6 +108,6 @@ echo "Num Tasks   : $SLURM_NTASKS total [$SLURM_NNODES nodes @ $SLURM_CPUS_ON_NO
 echo "======================================================"
 echo ""
 
-path/to/program.py --custom-args --hydraMPP_slurm $SLURM_JOB_NODELIST
+path/to/program.py --custom-args --hydraMPP_slurm $SLURM_JOB_NODELIST --hydraMPP-cpus $SLURM_CPUS_ON_NODE
 
 ```
