@@ -7,7 +7,7 @@ It will function seamlessly from a single computer to a computing cluster enviro
 
 ## Requirements
 
-HydraMPP is lightweight and requires little dependencies.  
+HydraMPP is designed to be lightweight and requires little dependencies.  
 
 Python >= 3.6
 
