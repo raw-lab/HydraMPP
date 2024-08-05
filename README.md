@@ -2,9 +2,14 @@
 
 ## A massive parallel processing library for distributed processing in Python
 
+HydraMPP is a library to make it easyer to create scalable distributed parallel processing applications.  
+It will function seamlessly from a single computer to a computing cluster environment with multiple nodes.
+
 ## Requirements
 
-HydraMPP is lightweight and requires little dependencies, and runs on Python >= 3.0.
+HydraMPP is lightweight and requires little dependencies.  
+
+Python >= 3.6
 
 ## Install
 
@@ -63,19 +68,41 @@ HydraMPP can run in 3 modes:
 
 Once HydraMPP has been initialized, just call the method you would like with the .remote tag and the library will queue and dispatch when enough CPUs are available either locally or on another node in your setup.
 
+### Step 5: Get return values
+
+Use ```hydraMPP.wait``` to check the status of running jobs.  
+It will return two lists. The first is a list of job IDs for the jobs that have finished and the second a list of jobs in queue or still running.  
+  
+Once jobs have finished running, use ```hydraMPP.get``` to get the return value and some stats on the job.  
+The return value of ```hydraMPP.get``` is a list with the following values:  
+  
+1. Boolean value stating if the job has finished
+2. The method name
+3. The return value
+4. Number of CPUs used for the job
+5. Time to run the job, in seconds
+6. The hostname of the node that the job ran on
+
 ## Status monitor
 
 A script is included to monitor the status of HydraMPP while it is running.
 
 ```bash
-hydra-status <address> <port>
+usage: hydra-status.py [-h] [address] [port]
+
+positional arguments:
+  address     Address of the HydraMPP server to get status from [127.0.0.1]
+  port        Port to connect to [24515]
+
+options:
+  -h, --help  show this help message and exit
 ```
 
 This will query the status of HydraMPP and display some information on connected clients, available CPUs, and jobs in queue.  
 It will immediately quit after displaying the status, for continuous monitoring use a tool like ```watch``` for this purpose.
 
 ```bash
-watch -n1 hydra-status localhost
+watch -n1 hydra-status.py localhost
 ```
 
 ## SLURM
@@ -87,8 +114,6 @@ All you need to do is add the flag ```--hydraMPP-slurm $SLURM_JOB_NODELIST``` wh
 make sure to call ```HydraMPP.init()``` once all required methods have been tagged with ```@HydraMPP.remote```  
   
 The ```hydraMPP-cpus``` can be used to set the number of CPUs for each node to use. If set to '0' or omitted then HydraMPP will try to guess the number of CPUs available on each node.
-
-i.e.
 
 ```bash
 #SBATCH --job-name=My_Slurm_Job
@@ -111,3 +136,11 @@ echo ""
 path/to/program.py --custom-args --hydraMPP_slurm $SLURM_JOB_NODELIST --hydraMPP-cpus $SLURM_CPUS_ON_NODE
 
 ```
+
+## CONTACT
+
+The informatics point-of-contact for this project is [Dr. Richard Allen White III](https://github.com/raw-lab).  
+If you have any questions or feedback, please feel free to get in touch by email.  
+[Dr. Richard Allen White III](mailto:rwhit101@uncc.edu)<br /> 
+[Jose Luis Figueroa III](mailto:jlfiguer@uncc.edu) <br />
+Or [open an issue](https://github.com/raw-lab/hydrampp/issues).  
