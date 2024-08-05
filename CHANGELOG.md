@@ -19,7 +19,7 @@
 
 ### v0.0.3 Known issues
 
-- SLURM not yet functional
+- Does not check for crashed clients or bad return value
 
 ### v0.0.3 Future plan
 
