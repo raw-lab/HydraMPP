@@ -299,12 +299,14 @@ def put(name:str, obj:tuple):
 	QUEUE[CURR_ID] = MANAGER.list([True, name, obj, 0, 0, NODES[0]['hostname']])
 	return CURR_ID
 
-def wait(objects:list, timeout=0, max=1):
+def wait(objects:list=None, timeout=0, max=1):
 	ready = list()
+	if not objects:
+		objects = QUEUE.keys()
 	objects = list(objects)
 	start = time.time()
 	while objects and len(ready) < max:
-		time.sleep(0.1)
+		time.sleep(0.01)
 		for i in range(len(objects)):
 			id = objects[i]
 			if QUEUE[id][0]:
@@ -327,7 +329,9 @@ def shutdown():
 	printlog("HydraMPP: Shutdown")
 	for node in NODES:
 		if 'socket' in node:
-			node['socket'].close()
+			try:
+				node['socket'].close()
+			except: pass
 	try:
 		P.kill()
 		P.join()
@@ -335,11 +339,14 @@ def shutdown():
 	MANAGER.shutdown()
 	#if self.paccept:
 	#	self.paccept.kill()
+	import os
+	import signal
 	for p in mp.active_children():
-		p.kill()
-	#for id,p in self.procs.items():
-	#	p.kill()
-	#printlog(self.curr_id)
+		try: p.kill()
+		except: pass
+		try: p.close()
+		except: pass
+		os.kill(p.ident, signal.SIGTERM)
 	time.sleep(1)
 	return
 
