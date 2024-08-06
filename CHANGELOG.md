@@ -1,5 +1,12 @@
 # HydraMPP
 
+## Version 0.0.4
+
+### v0.0.4 Bug Fixes
+
+- Fixed compatibility with OSX and conda-forge
+- Fixed a couple of race condition issues
+
 ## Version 0.0.3
 
 ### v0.0.3 New Features
