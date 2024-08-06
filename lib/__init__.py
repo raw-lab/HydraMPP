@@ -37,10 +37,12 @@ packet (to client): list
 
 """
 
-__version__ = "0.0.3"
+__version__ = "0.0.4"
 
 
 import sys
+import os
+import signal
 import socket
 import atexit
 import multiprocessing as mp
@@ -58,9 +60,9 @@ from .client import *
 
 
 ## GLOBAL VARIABLES ##
-MANAGER = mp.Manager()
-NODES = MANAGER.list()
-QUEUE = MANAGER.dict()
+#MANAGER = None
+#NODES = None
+#QUEUE = None
 
 SLURM_CLIENTS = list()
 RUNNING = False
@@ -68,6 +70,101 @@ SLURM = False
 P = None
 CURR_ID = 0
 WORKERS = dict()
+
+
+## REMOTE PROCS ###
+def worker(func_name, id, NODES, QUEUE, args, kwargs):
+	start = time.time()
+	ret = None
+	try:
+		ret = WORKERS[func_name](*args, **kwargs)
+	except Exception as e:
+		printlog("ERROR REMOTE:", id, func_name)
+		printlog(e)
+	finally:
+		NODES[0]['cpus'] += QUEUE[id][3]
+		#QUEUE[id] = [True, func.__name__, ret, QUEUE[id][3], time.time()-start, NODES[0]['hostname']]
+		QUEUE[id][2],QUEUE[id][4] = [ret, time.time()-start]
+		QUEUE[id][0] = True
+		#TODO: Save result to file for RAM conservation
+		#with Path(NODES[0]['ObjectStoreSocketName'], f"{id}_{func.__name__}").open('wb') as f:
+		#	pickle.dump(QUEUE[id], f)
+
+
+def main_loop(NODES, QUEUE):
+	RUNNING = True
+	address = ("", 24515)
+	sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+	sock_status.bind(address)	
+	sock_status.setblocking(False)
+	max_sent = 0
+
+	print("Status server listening")
+	while RUNNING:
+		time.sleep(0.1)
+		for i in range(1, len(NODES)):
+			try: msg = recv_msg(NODES[i]['socket'])
+			except: msg = None
+			try:
+				if msg:
+					(id,(func_name,ret,duration)), = pickle.loads(msg).items()
+					NODES[i]['cpus'] += QUEUE[id][3]
+					QUEUE[id][2], QUEUE[id][4] = [ret, duration]
+					QUEUE[id][0] = True
+					#QUEUE[id] = [True, func_name, ret, QUEUE[id][3], duration, NODES[i]['hostname']]
+			except Exception as e:
+				printlog("ERROR: bad message from:", NODES[i]['hostname'])
+				print(e)
+		# Listen for status request
+		try:
+			msg,addr = sock_status.recvfrom(1024)
+			if msg:
+				now = time.localtime()
+				nodes = list()
+				for node in NODES:
+					nodes += [dict(
+						address = node['address'],
+						hostname = node['hostname'],
+						num_cpus = node['num_cpus'],
+						cpus = node['cpus'],
+						)]
+				queue = dict()
+				for k,v in QUEUE.items():
+					queue[k] = dict(
+						finished = v[0],
+						func_name = v[1],
+						#ret = v[2],
+						num_cpus = v[3],
+						runtime = v[4],
+						hostname = v[5]
+					)
+				data = pickle.dumps((now, nodes, queue))
+				if len(data) > max_sent:
+					max_sent = len(data)
+				sock_status.sendto(data, addr)
+				#sendto_msg(sock_status, data, addr)
+		except socket.error: pass
+		except Exception as e:
+			printlog("RECV ERROR:")
+			printlog(e)
+	printlog("SERVER STOPPED LISTENING")
+	RUNNING = False
+	sock_status.close()
+	return
+
+
+def worker_listen(func_name, id, sock, args, kwargs):
+	start = time.time()
+	ret = None
+	try:
+		ret = WORKERS[func_name](*args, **kwargs)
+	except Exception as e:
+		printlog("CLIENT ERROR REMOTE:", id, func_name)
+		printlog(e)
+	finally:
+		packet = {id:[func_name, ret, time.time()-start]}
+		send_msg(sock, pickle.dumps(packet))
+	return
 
 
 ## CLASS ##
@@ -86,25 +183,10 @@ class Worker:
 		return self
 
 	def remote(self, *args, **kwargs):
+		global MANAGER
 		global NODES
+		global QUEUE
 		global CURR_ID
-		def __worker(func, id, args, kwargs):
-			global NODES
-			global CURR_ID
-			start = time.time()
-			ret = None
-			try:
-				ret = func(*args, **kwargs)
-			except Exception as e:
-				printlog("ERROR REMOTE:", id, func)
-				printlog(e)
-			finally:
-				NODES[0]['cpus'] += QUEUE[id][3]
-				#QUEUE[id] = [True, func.__name__, ret, QUEUE[id][3], time.time()-start, NODES[0]['hostname']]
-				QUEUE[id][0],QUEUE[id][2],QUEUE[id][4] = [True, ret, time.time()-start]
-				#TODO: Save result to file for RAM conservation
-				#with Path(NODES[0]['ObjectStoreSocketName'], f"{id}_{func.__name__}").open('wb') as f:
-				#	pickle.dump(QUEUE[id], f)
 
 		CURR_ID += 1
 		id = CURR_ID
@@ -117,7 +199,7 @@ class Worker:
 					NODES[i]['cpus'] -= self.num_cpus
 					QUEUE[id][5] = NODES[i]['hostname']
 					if i == 0:
-						mp.Process(target=__worker, args=[self.func, id, args, kwargs]).start()
+						mp.Process(target=worker, args=[self.func.__name__, id, NODES, QUEUE, args, kwargs]).start()
 					else:
 						packet = pickle.dumps({id:[self.func.__name__, args, kwargs, self.num_cpus]})
 						send_msg(NODES[i]['socket'], packet)
@@ -134,7 +216,9 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 	def is_ip(a,p):
 		return True #TODO: Actually check for valid ip address format
 	global P
+	global MANAGER
 	global NODES
+	global QUEUE
 	global RUNNING
 	global SLURM
 	if SLURM == "Host":
@@ -148,11 +232,18 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 		return True
 	RUNNING = True
 
+	mp.freeze_support()
+	mp.set_start_method("spawn")
+
+	MANAGER = mp.Manager()
+	NODES = MANAGER.list()
+	QUEUE = MANAGER.dict()
+
 	hostnames = set()
 	if not num_cpus:
 		num_cpus = psutil.cpu_count()
 	hostnames.add(socket.gethostname())
-	NODES = [MANAGER.dict(
+	NODES += [MANAGER.dict(
 		hostname = socket.gethostname(),
 		num_cpus = num_cpus,
 		cpus = num_cpus,
@@ -212,7 +303,7 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 	elif is_ip(address, port):
 		sock = client_init(address, port, num_cpus)
 		if sock:
-			client_listen(sock, WORKERS)
+			client_listen(sock)
 		else:
 			printlog("CLIENT: FAILED TO CONNECT")
 		sys.exit(0)
@@ -220,86 +311,53 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 		printlog("ERROR: address needs to be one of 'local', 'host', or an ip-address of a host to connect to.")
 		return False
 
-	P = mp.Process(target=main_loop)
+	atexit.register(shutdown, MANAGER, NODES, QUEUE)
+
+	P = mp.Process(target=main_loop, args=[NODES, QUEUE])
 	P.start()
+	time.sleep(0.1)
 	return True
 
+def client_listen(sock:socket.socket):
+	QUEUE = dict()
 
-def main_loop():
-	global RUNNING
-	address = ("", 24515)
-	sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-	sock_status.bind(address)	
-	sock_status.setblocking(False)
-	max_sent = 0
-
-	print("Status server listening")
-	while RUNNING:
+	# Listening Loop
+	while is_connected(sock):
+		msg = recv_msg(sock)
+		if msg:
+			(id,(func_name, args, kwargs, num_cpus)), = pickle.loads(msg).items()
+			func = WORKERS[func_name]
+			mp.Process(target=worker_listen, args=[func_name, id, sock, args, kwargs]).start()
 		time.sleep(0.1)
-		for i in range(1, len(NODES)):
-			try: msg = recv_msg(NODES[i]['socket'])
-			except: msg = None
-			try:
-				if msg:
-					(id,(func_name,ret,duration)), = pickle.loads(msg).items()
-					NODES[i]['cpus'] += QUEUE[id][3]
-					QUEUE[id][0], QUEUE[id][2], QUEUE[id][4] = [True, ret, duration]
-					#QUEUE[id] = [True, func_name, ret, QUEUE[id][3], duration, NODES[i]['hostname']]
-			except Exception as e:
-				printlog("ERROR: bad message from:", NODES[i]['hostname'])
-				print(e)
-		# Listen for status request
-		try:
-			msg,addr = sock_status.recvfrom(1024)
-			if msg:
-				now = time.localtime()
-				nodes = list()
-				for node in NODES:
-					nodes += [dict(
-						address = node['address'],
-						hostname = node['hostname'],
-						num_cpus = node['num_cpus'],
-						cpus = node['cpus'],
-						)]
-				queue = dict()
-				for k,v in QUEUE.items():
-					queue[k] = dict(
-						finished = v[0],
-						func_name = v[1],
-						#ret = v[2],
-						num_cpus = v[3],
-						runtime = v[4],
-						hostname = v[5]
-					)
-				data = pickle.dumps((now, nodes, queue))
-				if len(data) > max_sent:
-					max_sent = len(data)
-				sock_status.sendto(data, addr)
-				#sendto_msg(sock_status, data, addr)
-		except socket.error: pass
-		except Exception as e:
-			printlog("RECV ERROR:")
-			printlog(e)
-	RUNNING = False
-	sock_status.close()
+
+	sock.close()
+
+	printlog("INFO: Host disconnected")
+	printlog("INFO: Terminating program")
 	return
 
 def nodes():
+	global NODES
 	return NODES
 
 def get(id:int):
+	global QUEUE
 	if QUEUE[id][0]:
 		return QUEUE.pop(id)
 	else:
 		return QUEUE[id]
 
 def put(name:str, obj:tuple):
+	global MANAGER
+	global NODES
+	global QUEUE
 	global CURR_ID
 	CURR_ID += 1
 	QUEUE[CURR_ID] = MANAGER.list([True, name, obj, 0, 0, NODES[0]['hostname']])
 	return CURR_ID
 
 def wait(objects:list=None, timeout=0, max=1):
+	global QUEUE
 	ready = list()
 	if not objects:
 		objects = QUEUE.keys()
@@ -317,12 +375,13 @@ def wait(objects:list=None, timeout=0, max=1):
 	return ready, objects
 
 def remote(func):
+	global WORKERS
 	worker = Worker(func)
 	WORKERS[func.__name__] = func
 	return worker
 
-def shutdown():
-	global RUNNING
+def shutdown(MANAGER, NODES, QUEUE):
+	RUNNING = True
 	if not RUNNING:
 		return
 	RUNNING = False
@@ -334,13 +393,10 @@ def shutdown():
 			except: pass
 	try:
 		P.kill()
-		P.join()
 	except: pass
 	MANAGER.shutdown()
 	#if self.paccept:
 	#	self.paccept.kill()
-	import os
-	import signal
 	for p in mp.active_children():
 		try: p.kill()
 		except: pass
@@ -352,8 +408,6 @@ def shutdown():
 
 
 ### Execute commands on loading HydraMPP ###
-
-atexit.register(shutdown)
 
 def slurm():
 	global SLURM
@@ -396,3 +450,13 @@ def slurm():
 
 if re.search(r'--hydraMPP-', ''.join(sys.argv)):
 	slurm()
+
+if __name__ == "__main__":
+	mp.freeze_support()
+	mp.set_start_method("spawn")
+	global MANAGER
+	global NODES
+	global QUEUE
+	MANAGER = mp.Manager()
+	NODES = MANAGER.list()
+	QUEUE = MANAGER.dict()
