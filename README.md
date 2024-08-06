@@ -141,6 +141,6 @@ path/to/program.py --custom-args --hydraMPP_slurm $SLURM_JOB_NODELIST --hydraMPP
 
 The informatics point-of-contact for this project is [Dr. Richard Allen White III](https://github.com/raw-lab).  
 If you have any questions or feedback, please feel free to get in touch by email.  
-[Dr. Richard Allen White III](mailto:rwhit101@uncc.edu)<br /> 
-[Jose Luis Figueroa III](mailto:jlfiguer@uncc.edu) <br />
+[Dr. Richard Allen White III](mailto:rwhit101@uncc.edu)  
+[Jose Luis Figueroa III](mailto:jlfiguer@uncc.edu)  
 Or [open an issue](https://github.com/raw-lab/hydrampp/issues).  
