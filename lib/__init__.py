@@ -37,7 +37,7 @@ packet (to client): list
 
 """
 
-__version__ = "0.0.4"
+__version__ = "0.0.5"
 
 
 import sys
@@ -53,6 +53,7 @@ import time
 from pathlib import Path
 import re
 import subprocess
+import decorator
 
 from .log import *
 from .net import *
@@ -79,8 +80,8 @@ def worker(func_name, id, NODES, QUEUE, args, kwargs):
 	try:
 		ret = WORKERS[func_name](*args, **kwargs)
 	except Exception as e:
-		printlog("ERROR REMOTE:", id, func_name)
-		printlog(e)
+		printlog("ERROR PROCESS:", id, func_name)
+		printerr(e)
 	finally:
 		NODES[0]['cpus'] += QUEUE[id][3]
 		#QUEUE[id] = [True, func.__name__, ret, QUEUE[id][3], time.time()-start, NODES[0]['hostname']]
@@ -91,11 +92,10 @@ def worker(func_name, id, NODES, QUEUE, args, kwargs):
 		#	pickle.dump(QUEUE[id], f)
 
 
-def main_loop(NODES, QUEUE):
+def main_loop(NODES, QUEUE, address="", port=24515):
 	RUNNING = True
-	address = ("", 24515)
 	sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-	sock_status.bind(address)	
+	sock_status.bind((address, port))	
 	sock_status.setblocking(False)
 	max_sent = 0
 
@@ -223,7 +223,7 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 	global SLURM
 	if SLURM == "Host":
 		printlog("Host started through --hydraMPP options")
-		return True
+		address = "host"
 	elif SLURM:
 		printlog("Client started through --hydraMPP options")
 		address, port, num_cpus = SLURM
@@ -340,6 +340,39 @@ def nodes():
 	global NODES
 	return NODES
 
+@decorator
+def register(func, num_cpus=1):
+	WORKERS[func.__name__] = func
+	def caller(*args, **kwargs):
+		global MANAGER
+		global NODES
+		global QUEUE
+		global CURR_ID
+
+		CURR_ID += 1
+		id = CURR_ID
+
+		QUEUE[id] = MANAGER.list([False, func.__name__, None, num_cpus, 0, ""])
+		while True:
+			time.sleep(0.1)
+			for i in range(0, len(NODES)):
+				#cpus_ready = sum([])
+				if NODES[i]['cpus'] >= num_cpus:
+					NODES[i]['cpus'] -= num_cpus
+					QUEUE[id][5] = NODES[i]['hostname']
+					if i == 0:
+						mp.Process(target=worker, args=[func.__name__, id, NODES, QUEUE, args, kwargs]).start()
+					else:
+						packet = pickle.dumps({id:[func.__name__, args, kwargs, num_cpus]})
+						send_msg(NODES[i]['socket'], packet)
+					break
+			else:
+				# Finished loop without finding available node, retry
+				continue
+			break
+		return id
+	return caller
+
 def get(id:int):
 	global QUEUE
 	if QUEUE[id][0]:
@@ -356,7 +389,7 @@ def put(name:str, obj:tuple):
 	QUEUE[CURR_ID] = MANAGER.list([True, name, obj, 0, 0, NODES[0]['hostname']])
 	return CURR_ID
 
-def wait(objects:list=None, timeout=0, max=1):
+def wait(objects:list=None, timeout=None, max=1):
 	global QUEUE
 	ready = list()
 	if not objects:
@@ -370,6 +403,8 @@ def wait(objects:list=None, timeout=0, max=1):
 			if QUEUE[id][0]:
 				ready += [objects.pop(i)]
 				break
+		if timeout is None:
+			continue
 		if time.time() < start+timeout:
 			break
 	return ready, objects
@@ -428,6 +463,7 @@ def slurm():
 		printlog("hydraMPP_slurm:", socket.gethostname())
 		cmd = ["scontrol", "show", "hostnames", args.hydraMPP_slurm]
 		node_list = subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.split()
+		printlog("Node list:", node_list)
 		
 		cmd = ["srun", "--nodes=1", "--ntasks=1", "-w", node_list[0], "hostname", "--ip-address"]
 		head_ip = subprocess.run(cmd, stdout=subprocess.PIPE, text=True).stdout.strip()
@@ -439,10 +475,11 @@ def slurm():
 									  stdout=open(f"tmp-hydra/{node_list[i]}.stdout", 'w'),
 									  stderr=open(f"tmp-hydra/{node_list[i]}.stderr", 'w')
 									  )]
-		init("host", timeout=5+len(SLURM_CLIENTS))
+
+		printlog(f"Setting node {nodes[0]} to host")
 		SLURM = "Host"
 	elif args.hydraMPP_client:
-		printlog("Starting client node on slurm", socket.gethostname())
+		printlog("Starting client node:", socket.gethostname())
 		time.sleep(1)
 		SLURM = args.hydraMPP_client, 24515, args.hydraMPP_cpus
 		#init(address=args.hydraMPP_client)
@@ -452,6 +489,7 @@ if re.search(r'--hydraMPP-', ''.join(sys.argv)):
 	slurm()
 
 if __name__ == "__main__":
+	printlog("LOADING HYDRA")
 	mp.freeze_support()
 	mp.set_start_method("spawn")
 	global MANAGER
