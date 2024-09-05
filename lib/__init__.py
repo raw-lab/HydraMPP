@@ -53,7 +53,6 @@ import time
 from pathlib import Path
 import re
 import subprocess
-import decorator
 
 from .log import *
 from .net import *
@@ -101,7 +100,8 @@ def main_loop(NODES, QUEUE, address="", port=24515):
 
 	print("Status server listening")
 	while RUNNING:
-		time.sleep(0.1)
+		time.sleep(0.01)
+		## Check for finished jobs from clients
 		for i in range(1, len(NODES)):
 			try: msg = recv_msg(NODES[i]['socket'])
 			except: msg = None
@@ -111,11 +111,34 @@ def main_loop(NODES, QUEUE, address="", port=24515):
 					NODES[i]['cpus'] += QUEUE[id][3]
 					QUEUE[id][2], QUEUE[id][4] = [ret, duration]
 					QUEUE[id][0] = True
-					#QUEUE[id] = [True, func_name, ret, QUEUE[id][3], duration, NODES[i]['hostname']]
 			except Exception as e:
 				printlog("ERROR: bad message from:", NODES[i]['hostname'])
 				print(e)
-		# Listen for status request
+		### Queue pending jobs
+		for id in QUEUE.keys():
+			#skip jobs with hostname assigned
+			try: #get() can remove an id partway through this loop, we don't care about that one here
+				if QUEUE[id][-1] is not None:
+					continue
+			except: continue
+			func_name = QUEUE[id][1]
+			args,kwargs = QUEUE[id][2]
+			num_cpus = QUEUE[id][3]
+			for i in range(0, len(NODES)):
+				if NODES[i]['cpus'] >= num_cpus:
+					NODES[i]['cpus'] -= num_cpus
+					QUEUE[id][2] = None
+					QUEUE[id][5] = NODES[i]['hostname']
+					if i == 0:
+						mp.Process(target=worker, args=[func_name, id, NODES, QUEUE, args, kwargs]).start()
+					else:
+						packet = pickle.dumps({id:[func_name, args, kwargs, num_cpus]})
+						send_msg(NODES[i]['socket'], packet)
+					break
+			else:
+				continue
+			break
+		## Listen for status request
 		try:
 			msg,addr = sock_status.recvfrom(1024)
 			if msg:
@@ -123,31 +146,25 @@ def main_loop(NODES, QUEUE, address="", port=24515):
 				nodes = list()
 				for node in NODES:
 					nodes += [dict(
-						address = node['address'],
-						hostname = node['hostname'],
-						num_cpus = node['num_cpus'],
-						cpus = node['cpus'],
+						address = node['address'], hostname = node['hostname'],
+						num_cpus = node['num_cpus'], cpus = node['cpus'],
 						)]
 				queue = dict()
 				for k,v in QUEUE.items():
 					queue[k] = dict(
-						finished = v[0],
-						func_name = v[1],
+						finished = v[0], func_name = v[1],
 						#ret = v[2],
-						num_cpus = v[3],
-						runtime = v[4],
-						hostname = v[5]
+						num_cpus = v[3], runtime = v[4], hostname = v[5]
 					)
 				data = pickle.dumps((now, nodes, queue))
 				if len(data) > max_sent:
 					max_sent = len(data)
 				sock_status.sendto(data, addr)
-				#sendto_msg(sock_status, data, addr)
 		except socket.error: pass
 		except Exception as e:
 			printlog("RECV ERROR:")
 			printlog(e)
-	printlog("SERVER STOPPED LISTENING")
+	printlog("SERVER STOPPED LISTENING", max_sent)
 	RUNNING = False
 	sock_status.close()
 	return
@@ -169,17 +186,23 @@ def worker_listen(func_name, id, sock, args, kwargs):
 
 ## CLASS ##
 class Worker:
-	def __init__(self, func):
+	def __init__(self, func, num_cpus=1, blocking=True):
 		self.func = func
+		self.def_num_cpus = num_cpus
+		self.def_blocking = blocking
 		self.reset()
 		return
 	
 	def reset(self):
-		self.num_cpus = 1
+		self.num_cpus = self.def_num_cpus
+		self.blocking = self.def_blocking
 		return
 
-	def options(self, num_cpus=1):
-		self.num_cpus = num_cpus
+	def options(self, num_cpus=None, blocking=None):
+		if num_cpus is not None:
+			self.num_cpus = num_cpus
+		if blocking is not None:
+			self.blocking = blocking
 		return self
 
 	def remote(self, *args, **kwargs):
@@ -190,24 +213,27 @@ class Worker:
 
 		CURR_ID += 1
 		id = CURR_ID
-		QUEUE[id] = MANAGER.list([False, self.func.__name__, None, self.num_cpus, 0, ""])
-		while True:
-			time.sleep(0.1)
-			for i in range(0, len(NODES)):
-				#cpus_ready = sum([])
-				if NODES[i]['cpus'] >= self.num_cpus:
-					NODES[i]['cpus'] -= self.num_cpus
-					QUEUE[id][5] = NODES[i]['hostname']
-					if i == 0:
-						mp.Process(target=worker, args=[self.func.__name__, id, NODES, QUEUE, args, kwargs]).start()
-					else:
-						packet = pickle.dumps({id:[self.func.__name__, args, kwargs, self.num_cpus]})
-						send_msg(NODES[i]['socket'], packet)
-					break
-			else:
-				# Finished loop without finding available node, retry
-				continue
-			break
+		if self.blocking:
+			QUEUE[id] = MANAGER.list([False, self.func.__name__, (args,kwargs), self.num_cpus, 0, ""])
+			while True:
+				time.sleep(0.01)
+				for i in range(0, len(NODES)):
+					#cpus_ready = sum([])
+					if NODES[i]['cpus'] >= self.num_cpus:
+						NODES[i]['cpus'] -= self.num_cpus
+						QUEUE[id][5] = NODES[i]['hostname']
+						if i == 0:
+							mp.Process(target=worker, args=[self.func.__name__, id, NODES, QUEUE, args, kwargs]).start()
+						else:
+							packet = pickle.dumps({id:[self.func.__name__, args, kwargs, self.num_cpus]})
+							send_msg(NODES[i]['socket'], packet)
+						break
+				else:
+					# Finished loop without finding available node, retry
+					continue
+				break
+		else:
+			QUEUE[id] = MANAGER.list([False, self.func.__name__, (args,kwargs), self.num_cpus, 0, None])
 		self.reset()
 		return id
 
@@ -340,8 +366,7 @@ def nodes():
 	global NODES
 	return NODES
 
-@decorator
-def register(func, num_cpus=1):
+def register(func):
 	WORKERS[func.__name__] = func
 	def caller(*args, **kwargs):
 		global MANAGER
@@ -349,10 +374,13 @@ def register(func, num_cpus=1):
 		global QUEUE
 		global CURR_ID
 
+		num_cpus = 1
+		if "num_cpus" in kwargs:
+			num_cpus = kwargs['num_cpus']
+
 		CURR_ID += 1
 		id = CURR_ID
-
-		QUEUE[id] = MANAGER.list([False, func.__name__, None, num_cpus, 0, ""])
+		QUEUE[id] = MANAGER.list([False, func.__name__, (args, kwargs), num_cpus, 0, None])
 		while True:
 			time.sleep(0.1)
 			for i in range(0, len(NODES)):
@@ -389,25 +417,36 @@ def put(name:str, obj:tuple):
 	QUEUE[CURR_ID] = MANAGER.list([True, name, obj, 0, 0, NODES[0]['hostname']])
 	return CURR_ID
 
-def wait(objects:list=None, timeout=None, max=1):
+def wait(queue:list=None, timeout=None, max=1):
+	'''Waits for an item in the queue to be ready and returns a list of ready IDs and queued IDs.
+
+	Parameters:
+		queue (list): A list of IDs to check. If None, then checks all IDs in the global queue. [None]
+		timeout (float): Time, in seconds, to wait for a job to be ready. If None then it blocks until a job is ready. [None]
+		max (int): The maximum amount of items to return as ready [1]
+
+	Returns:
+		tuple: Two lists in a tuple (ready, pending)
+	'''
+
 	global QUEUE
 	ready = list()
-	if not objects:
-		objects = QUEUE.keys()
-	objects = list(objects)
+	if queue is None:
+		queue = QUEUE.keys()
+	queue = list(queue)
 	start = time.time()
-	while objects and len(ready) < max:
+	while queue and len(ready) < max:
 		time.sleep(0.01)
-		for i in range(len(objects)):
-			id = objects[i]
+		for i in range(len(queue)):
+			id = queue[i]
 			if QUEUE[id][0]:
-				ready += [objects.pop(i)]
+				ready += [queue.pop(i)]
 				break
 		if timeout is None:
 			continue
-		if time.time() < start+timeout:
+		if time.time() > start+timeout:
 			break
-	return ready, objects
+	return ready,queue
 
 def remote(func):
 	global WORKERS
