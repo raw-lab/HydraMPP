@@ -21,4 +21,4 @@ def printerr(e):
 	io = StringIO()
 	traceback.print_exception(e, file=io)
 	for line in io.getvalue().splitlines():
-		printlog(line)
+		printlog(">", line)
