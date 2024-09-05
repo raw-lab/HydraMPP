@@ -1,4 +1,5 @@
 import socket
+import select
 import struct
 
 from .log import *
@@ -23,7 +24,14 @@ def is_connected(sock):
 def send_msg(sock, msg):
 	# Prefix each message with a 4-byte length (network byte order)
 	msg = struct.pack('>I', len(msg)) + msg
-	sock.sendall(msg)
+	#sock.sendall(msg)
+	while len(msg):
+		try:
+			l = sock.send(msg)
+			msg = msg[l:]
+		except socket.error:
+			select.select([], [sock], [])
+	return
 
 
 def recv_msg(sock):
