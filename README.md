@@ -2,7 +2,7 @@
 
 ## A massive parallel processing library for distributed processing in Python
 
-HydraMPP is a library to make it easyer to create scalable distributed parallel processing applications.  
+HydraMPP is a library to make it easier to create scalable distributed parallel processing applications.  
 It will function seamlessly from a single computer to a computing cluster environment with multiple nodes.
 
 ## Requirements
