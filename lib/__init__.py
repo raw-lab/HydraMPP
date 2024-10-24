@@ -64,6 +64,9 @@ from .client import *
 #NODES = None
 #QUEUE = None
 
+TMP_HYDRA = time.localtime()
+TMP_HYDRA = Path("tmp-hydra", f"{TMP_HYDRA[0]}-{TMP_HYDRA[1]:02}-{TMP_HYDRA[2]:02}_{TMP_HYDRA[3]:02}.{TMP_HYDRA[4]:02}")
+
 SLURM_CLIENTS = list()
 RUNNING = False
 SLURM = False
@@ -273,18 +276,19 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 		hostname = socket.gethostname(),
 		num_cpus = num_cpus,
 		cpus = num_cpus,
-		temp = Path("tmp-hydra"),
-		ObjectStoreSocketName = Path("tmp-hydra", "objects"))]
-	NODES[0]['ObjectStoreSocketName'].mkdir(parents=True, exist_ok=True)
-	printlog("Starting HydraMPP (Massive Parallel Processing)", __version__)
+		temp = TMP_HYDRA,
+		ObjectStoreSocketName = Path(TMP_HYDRA, "objects"))]
+	printlog("Starting HydraMPP (Massive Parallel Processing)", f"v{__version__}")
 
 	# Network connection
 	printlog("Connecting to:", address)
 	if address == "local":
 		NODES[0]['address'] = "local"
+		NODES[0]['ObjectStoreSocketName'].mkdir(parents=True, exist_ok=True)
 		#NODES[0]['socket'] = Path("tmp-hydra", 'socket.txt').open('w')
 	elif address == "host":
 		NODES[0]['address'] = "host"
+		NODES[0]['ObjectStoreSocketName'].mkdir(parents=True, exist_ok=True)
 		h_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		h_socket.settimeout(0.5)
 		h_socket.bind(("", port))
@@ -488,11 +492,14 @@ def slurm():
 	global SLURM_CLIENTS
 
 	import argparse
-	parser = argparse.ArgumentParser()
+	parser = argparse.ArgumentParser("""
+		HydraMPP optional arguments.
+		Helps configure HydraMPP for SLURM use automatically.""")
 	s_parser = parser.add_mutually_exclusive_group()
 	s_parser.add_argument('--hydraMPP-slurm', type=str, help=argparse.SUPPRESS)
 	s_parser.add_argument('--hydraMPP-client', type=str, help=argparse.SUPPRESS)
 	parser.add_argument('--hydraMPP-cpus', type=int, default=0, help=argparse.SUPPRESS)
+	parser.add_argument('--hydraMPP-port', type=int, default=24515, help=argparse.SUPPRESS)
 	args,argv = parser.parse_known_args()
 
 	# clear hydra flags from sys.argv
@@ -510,17 +517,18 @@ def slurm():
 
 		for i in range(1, len(node_list)):
 			cmd = ["srun", "--nodes=1", "--ntasks=1", "-w", node_list[i]] + sys.argv + ["--hydraMPP-client", head_ip]
+			TMP_HYDRA.mkdir(parents=True, exist_ok=True)
 			SLURM_CLIENTS += [subprocess.Popen(cmd,
-									  stdout=open(f"tmp-hydra/{node_list[i]}.stdout", 'w'),
-									  stderr=open(f"tmp-hydra/{node_list[i]}.stderr", 'w')
+									  stdout=open(f"{TMP_HYDRA}/{node_list[i]}.stdout", 'w'),
+									  stderr=open(f"{TMP_HYDRA}/{node_list[i]}.stderr", 'w')
 									  )]
 
-		printlog(f"Setting node {nodes[0]} to host")
+		printlog(f"Setting node {node_list[0]} to host")
 		SLURM = "Host"
 	elif args.hydraMPP_client:
 		printlog("Starting client node:", socket.gethostname())
 		time.sleep(1)
-		SLURM = args.hydraMPP_client, 24515, args.hydraMPP_cpus
+		SLURM = args.hydraMPP_client, args.hydraMPP_port, args.hydraMPP_cpus
 		#init(address=args.hydraMPP_client)
 	return
 
