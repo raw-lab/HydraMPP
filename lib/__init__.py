@@ -96,12 +96,17 @@ def worker(func_name, id, NODES, QUEUE, args, kwargs):
 
 def main_loop(NODES, QUEUE, address="", port=24515):
 	RUNNING = True
-	sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
-	sock_status.bind((address, port))	
-	sock_status.setblocking(False)
+	try:
+		sock_status = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+		sock_status.bind((address, port))	
+		sock_status.setblocking(False)
+		printlog("Status server listening on port:", port)
+	except:
+		printlog("WARNING: Unable to open status listening socket, status server unavailable. Port:", port)
+		sock_status = False
 	max_sent = 0
+	curr_id = 0
 
-	print("Status server listening")
 	while RUNNING:
 		time.sleep(0.01)
 		## Check for finished jobs from clients
@@ -143,33 +148,35 @@ def main_loop(NODES, QUEUE, address="", port=24515):
 			break
 		## Listen for status request
 		try:
-			msg,addr = sock_status.recvfrom(1024)
-			if msg:
-				now = time.localtime()
-				nodes = list()
-				for node in NODES:
-					nodes += [dict(
-						address = node['address'], hostname = node['hostname'],
-						num_cpus = node['num_cpus'], cpus = node['cpus'],
-						)]
-				queue = dict()
-				for k,v in QUEUE.items():
-					queue[k] = dict(
-						finished = v[0], func_name = v[1],
-						#ret = v[2],
-						num_cpus = v[3], runtime = v[4], hostname = v[5]
-					)
-				data = pickle.dumps((now, nodes, queue))
-				if len(data) > max_sent:
-					max_sent = len(data)
-				sock_status.sendto(data, addr)
+			if sock_status:
+				msg,addr = sock_status.recvfrom(1024)
+				if msg:
+					now = time.localtime()
+					nodes = list()
+					for node in NODES:
+						nodes += [dict(
+							address = node['address'], hostname = node['hostname'],
+							num_cpus = node['num_cpus'], cpus = node['cpus'],
+							)]
+					queue = dict()
+					for k,v in QUEUE.items():
+						queue[k] = dict(
+							finished = v[0], func_name = v[1],
+							#ret = v[2],
+							num_cpus = v[3], runtime = v[4], hostname = v[5]
+						)
+					data = pickle.dumps((now, nodes, queue))
+					if len(data) > max_sent:
+						max_sent = len(data)
+					sock_status.sendto(data, addr)
 		except socket.error: pass
 		except Exception as e:
 			printlog("RECV ERROR:")
 			printlog(e)
 	printlog("SERVER STOPPED LISTENING", max_sent)
 	RUNNING = False
-	sock_status.close()
+	if sock_status:
+		sock_status.close()
 	return
 
 
@@ -343,7 +350,7 @@ def init(address="local", num_cpus=None, timeout=10, port=24515, log_to_driver=F
 
 	atexit.register(shutdown, MANAGER, NODES, QUEUE)
 
-	P = mp.Process(target=main_loop, args=[NODES, QUEUE])
+	P = mp.Process(target=main_loop, args=[NODES, QUEUE], kwargs={"address":"", "port":port})
 	P.start()
 	time.sleep(0.1)
 	return True
