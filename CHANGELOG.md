@@ -1,5 +1,15 @@
 # HydraMPP
 
+## Version 0.0.5
+
+### v0.0.5 New Features
+
+- More efficient in process spawning
+
+### v0.0.5 Bug Fixes
+
+- Fixed port issue with status monitor
+
 ## Version 0.0.4
 
 ### v0.0.4 Bug Fixes
